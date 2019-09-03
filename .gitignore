@@ -9,4 +9,6 @@
 *.caffemodel
 *.mat
 *.npy
+*.png
 
+log/
