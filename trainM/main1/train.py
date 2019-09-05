@@ -55,7 +55,7 @@ class SISR():
                 torch.nn.init.xavier_uniform_(m.weight.data)
 
         #INITIALIZE VARIABLES
-        SR_COUNT = args.action_space
+        self.SR_COUNT = args.action_space
         SRMODEL_PATH = args.srmodel_path
         self.batch_size = args.batch_size
         self.TRAINING_LRPATH = glob.glob(os.path.join(args.training_lrpath,"*"))
@@ -73,7 +73,7 @@ class SISR():
         #LOAD A COPY OF THE MODEL N TIMES
         self.SRmodels = []
         self.SRoptimizers = []
-        for i in range(SR_COUNT):
+        for i in range(self.SR_COUNT):
             model = arch.RRDBNet(3,3,64,23,gc=32)
             model.apply(init_weights)
             self.SRmodels.append(model)
@@ -175,6 +175,8 @@ class SISR():
             LR = cv2.imread(LRpath,cv2.IMREAD_COLOR)
             HR = cv2.imread(HRpath,cv2.IMREAD_COLOR)
             LR,HR = self.getTrainingPatches(LR,HR)
+            sisr_loss = []
+            agent_loss = []
 
             #FOR 10 RANDOM SUB SAMPLES
             for _ in range(10):
@@ -182,46 +184,44 @@ class SISR():
                 lrbatch = LR[labels,:,:,:]
                 hrbatch = HR[labels,:,:,:]
 
-                for j,m in enumerate(self.SRmodels):
-                    hr_pred = m(lrbatch)
-
+                self.agent.opt.zero_grad()    #zero our policy gradients
+                #UPDATE OUR SISR MODELS
+                for j,sisr in enumerate(self.SRmodels):
+                    self.SRoptimizers[j].zero_grad()           #zero our sisr gradients
+                    hr_pred = sisr(lrbatch)
                     m_labels = labels + np.sum(self.patchinfo[:idx])
-                    agentparams = self.agent.model.M[m_labels,j]
-                    print(agentparams.shape)
-                    print((hr_pred - hrbatch).mean(0).shape)
 
-                    quit()
-                    loss = torch.abs(hr_pred - hrbatch) * agentparams.unsqueeze(1)
+                    #update sisr model based on weighted l1 loss
+                    l1diff = torch.abs(hr_pred - hrbatch).view(64,-1).mean(1)
+                    imgscore = torch.matmul(l1diff.unsqueeze(1),F.one_hot(torch.Tensor([j]).long(),self.SR_COUNT).float().to(self.device))
+                    weighted_imgscore = self.agent.model(imgscore,m_labels)
+                    loss1 = torch.mean(weighted_imgscore)
+                    loss1.backward(retain_graph=True)
+                    self.SRoptimizers[j].step()
+                    sisr_loss.append(loss1.item())
 
-                print(labels)
-                quit()
-                #for m in self.SRmodels:
-                #    hr_hat,psnr,ssim,sisr_loss = self.applySISR(lr,action,hr)
+                    #gather the gradients of the agent policy and constrain them to be within 0-1 with max value as 1
+                    one_matrix = torch.ones(64,self.SR_COUNT).to(self.device)
+                    weight_identity = self.agent.model(one_matrix,m_labels)
+                    loss2 = torch.mean(torch.abs(torch.sum(torch.abs(weight_identity),dim=1) - 1)) #have sum of each row equal to 1
+                    val,maxid = weight_identity.max(1) #have max of each row equal to 1
+                    loss3 = torch.mean(torch.abs(weight_identity[:,maxid] - 1))
+                    loss2.backward(retain_graph=True)
+                    loss3.backward(retain_graph=True)
+                    agent_loss.append(loss2.item() + loss3.item() + loss1.item())
 
+                #UPDATE THE AGENT POLICY ACCORDING TO ACCUMULATED GRADIENTS FOR ALL SUPER RESOLUTION MODELS
+                self.agent.opt.step()
 
-        '''
-        actions_taken = deque(maxlen=10000)
-        for i in count():
-            LR, HR = self.getTrainingPatches()
+                #LOG THE INFORMATION
+                print('\rEpisode {}, Agent Loss: {:.4f}, SISR Loss: {:.4f}'\
+                      .format(c,np.mean(agent_loss),np.mean(sisr_loss)),end="\n")
+                self.logger.scalar_summary({'AgentLoss': np.mean(agent_loss), 'SISRLoss': np.mean(sisr_loss)})
+                actions_taken = self.agent.model.M.weight.max(1)[1]
+                self.logger.hist_summary('actions',actions_taken.cpu().numpy(),bins=self.SR_COUNT)
 
-            timestep = time.time()
-            for lr,hr in zip(LR,HR):
-                lr = lr.unsqueeze(0); hr = hr.unsqueeze(0)
-                action = self.agent.selectAction(lr)[0]
-                hr_hat, psnr, ssim, sisr_loss = self.applySISR(lr,action,hr)
-
-                loss = self.agent.learn(lr,action,psnr,ssim)
-
-                #LOG THE LOSS AND ACTIONS TAKEN
-                actions_taken.append(action)
-                self.logger.scalar_summary({'AgentLoss': loss, 'SISR_loss': sisr_loss})
-                self.logger.histo_summary('actions', np.array(actions_taken))
-                self.logger.incstep()
-                print('\rEpisode {}, Time: {:.2f}, Agent Loss: {:.4f}, SISR Loss: {:.4f}'\
-                      .format(i, time.time() - timestep, loss,sisr_loss),end="\n")
-
+            #save the model at the end of every episode
             self.savemodels()
-        '''
 
 ########################################################################################################
 ########################################################################################################

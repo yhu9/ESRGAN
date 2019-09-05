@@ -57,14 +57,27 @@ class ReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 #######################################################################################################
+class Mask(nn.Module):
+    def __init__(self,action_space,num_patches):
+        super(Mask,self).__init__()
+        self.weight = torch.nn.Parameter(data=torch.Tensor(num_patches, action_space), requires_grad=True)
+        self.weight.data.fill_(0.1)
+
+    def forward(self,x,labels):
+        myweights = self.weight[labels].mul(x)
+        #myweights = F.softmax(myweights)
+        return myweights
+
 class Actor(nn.Module):
     def __init__(self,action_space=10,num_patches=565408*10):
         super(Actor,self).__init__()
-        self.M = torch.nn.Parameter(torch.ones(num_patches,action_space) * 1/10).float()
-        self.M.requires_grad = True
+        self.M = Mask(action_space,num_patches)
 
-    def forward(self,x):
-        return 0
+    def forward(self,x,labels):
+
+        weights = self.M(x,labels)
+        #weights = F.softmax(self.M,dim=1)[labels,j] * x
+        return weights
 
 #OUR ENCODER DECODER NETWORK FOR MODEL SELECTION NETWORK
 class Model(nn.Module):
@@ -117,7 +130,7 @@ class Agent():
             self.model.load_state_dict(chkpoint['model'])
 
         self.model.to(self.device)
-        self.opt = torch.optim.Adam(self.model.parameters(),lr=0.00001)
+        self.opt = torch.optim.Adam(self.model.parameters(),lr=0.001)
 
         return None
 

@@ -30,7 +30,7 @@ class Logger(object):
         """Log a scalar variable."""
 
         for tag, value in data.items():
-            summary = tf.Summary(value=[tf.Summary.Value(tag=tag, simple_value=value)])
+            summary = tf.compat.v1.Summary(value=[tf.compat.v1.Summary.Value(tag=tag, simple_value=value)])
             self.writer.add_summary(summary, self.step)
 
     def image_summary(self, tag, images, step):
@@ -56,14 +56,14 @@ class Logger(object):
         summary = tf.Summary(value=img_summaries)
         self.writer.add_summary(summary, step)
 
-    def histo_summary(self, tag, values, bins=1000):
+    def hist_summary(self, tag, values, bins=5):
         """Log a histogram of the tensor of values."""
 
         # Create a histogram using numpy
         counts, bin_edges = np.histogram(values, bins=bins)
 
         # Fill the fields of the histogram proto
-        hist = tf.HistogramProto()
+        hist = tf.compat.v1.HistogramProto()
         hist.min = float(np.min(values))
         hist.max = float(np.max(values))
         hist.num = int(np.prod(values.shape))
@@ -80,7 +80,7 @@ class Logger(object):
             hist.bucket.append(c)
 
         # Create and write Summary
-        summary = tf.Summary(value=[tf.Summary.Value(tag=tag, histo=hist)])
+        summary = tf.compat.v1.Summary(value=[tf.compat.v1.Summary.Value(tag=tag, histo=hist)])
         self.writer.add_summary(summary, self.step)
         self.writer.flush()
 
