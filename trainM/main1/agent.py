@@ -61,7 +61,7 @@ class Mask(nn.Module):
     def __init__(self,action_space,num_patches):
         super(Mask,self).__init__()
         self.weight = torch.nn.Parameter(data=torch.Tensor(num_patches, action_space), requires_grad=True)
-        self.weight.data.fill_(0.1)
+        self.weight.data.fill_(1/action_space)
 
     def forward(self,x,labels):
         myweights = self.weight[labels].mul(x)
@@ -107,7 +107,7 @@ class Model(nn.Module):
 
 #AGENT COMPRISES OF A MODEL SELECTION NETWORK AND MAKES ACTIONS BASED ON IMG PATCHES
 class Agent():
-    def __init__(self,args,device,action_space,num_patches):
+    def __init__(self,args,action_space,num_patches):
 
         #INITIALIZE HYPER PARAMS
         self.steps = 0
@@ -118,7 +118,7 @@ class Agent():
         self.EPS_DECAY = args.eps_decay
         self.TARGET_UPDATE = args.target_update
         self.ACTION_SPACE = args.action_space
-        self.device = device
+        self.device = args.device
         self.memory = ReplayMemory(args.memory_size,device=self.device)
         load = args.loadagent
 

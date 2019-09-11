@@ -29,10 +29,10 @@ parser.add_argument("--batch_size",default=32, help='Batch Size')
 parser.add_argument("--gamma",default=.9, help='Gamma Value for RL algorithm')
 parser.add_argument("--eps_start",default=.90, help='Epsilon decay start value')
 parser.add_argument("--eps_end",default=0.10, help='Epsilon decay end value')
-parser.add_argument("--eps_decay",default=10000, help='Epsilon decay fractional step size')
+parser.add_argument("--eps_decay",default=1000000, help='Epsilon decay fractional step size')
 parser.add_argument("--target_update",default=20, help='Target network update time')
-parser.add_argument("--action_space",default=10, help='Action Space size')
-parser.add_argument("--memory_size",default=10000, help='Memory Size')
+parser.add_argument("--action_space",default=4, help='Action Space size')
+parser.add_argument("--memory_size",default=100000, help='Memory Size')
 parser.add_argument("--training_lrpath",default="../../data/DIV2K_train_LR_bicubic/X4")
 #parser.add_argument("--training_lrpath",default="LR")
 parser.add_argument("--training_hrpath",default="../../data/DIV2K_train_HR")
@@ -40,6 +40,8 @@ parser.add_argument("--testing_path",default="../../data/DIV2K_train_LR_bicubic/
 parser.add_argument("--loadagent",default=False, action='store_const',const=True)
 parser.add_argument("--learning_rate",default=0.0001,help="Learning rate of Super Resolution Models")
 parser.add_argument("--upsize", default=4,help="Upsampling size of the network")
+parser.add_argument("--device",default='cuda:0',help='set device to train on')
+parser.add_argument("--random",default=False,action='store_const',const=True)
 parser.add_argument("--name", required=True, help='Name to give this training session')
 args = parser.parse_args()
 ########################################################################################################
@@ -47,6 +49,11 @@ args = parser.parse_args()
 #OUR END-TO-END MODEL TRAINER
 class SISR():
     def __init__(self, args=args):
+
+        #RANDOM MODEL INITIALIZATION FUNCTION
+        def init_weights(m):
+            if isinstance(m,torch.nn.Linear) or isinstance(m,torch.nn.Conv2d):
+                torch.nn.init.xavier_uniform_(m.weight.data)
 
         #INITIALIZE VARIABLES
         SR_COUNT = args.action_space
@@ -60,16 +67,18 @@ class SISR():
         self.LR = args.learning_rate
         self.UPSIZE = args.upsize
         self.step = 0
-        self.logger = logger.Logger(args.name)   #create our logger for tensorboard in log directory
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") #determine cpu/gpu
-        self.agent = agent.Agent(args,self.device)  #create our agent
+        if args.name != 'none': self.logger = logger.Logger(args.name)   #create our logger for tensorboard in log directory
+        else: self.logger = None
+        self.device = torch.device(args.device) #determine cpu/gpu
+        self.agent = agent.Agent(args)  #create our agent
 
         #LOAD A COPY OF THE MODEL N TIMES
         self.SRmodels = []
         self.SRoptimizers = []
         for i in range(SR_COUNT):
             model = arch.RRDBNet(3,3,64,23,gc=32)
-            model.load_state_dict(torch.load(SRMODEL_PATH),strict=True)
+            if not args.random: model.load_state_dict(torch.load(SRMODEL_PATH),strict=True)
+            else: model.apply(init_weights)
             self.SRmodels.append(model)
             self.SRmodels[-1].to(self.device)
             self.SRoptimizers.append(torch.optim.Adam(model.parameters(),lr=self.LR))
@@ -122,7 +131,7 @@ class SISR():
 
         #self.SRoptimizers[action].zero_grad()
         hr_hat = self.SRmodels[action](lr)
-        loss = F.l1_loss(hr,hr_hat)
+        loss = F.l1_loss(hr_hat,hr)
         loss.backward()
         #self.SRoptimizers[action].step()
 
@@ -168,13 +177,16 @@ class SISR():
                 loss = self.agent.learn(lr,action,psnr,ssim)
 
                 #LOG THE LOSS AND ACTIONS TAKEN
-                actions_taken.append(action)
-                self.logger.scalar_summary({'AgentLoss': loss, 'SISR_loss': sisr_loss})
-                self.logger.histo_summary('actions', np.array(actions_taken))
-                self.logger.incstep()
-                print('\rEpisode {}, Time: {:.2f}, Agent Loss: {:.4f}, SISR Loss: {:.4f}'\
-                      .format(i, time.time() - timestep, loss,sisr_loss),end="\n")
-            self.savemodels()
+                if self.logger:
+                    actions_taken.append(action)
+                    self.logger.scalar_summary({'AgentLoss': loss, 'SISR_loss': sisr_loss})
+                    #self.logger.histo_summary('actions', np.array(actions_taken))
+                    self.logger.incstep()
+
+                print('\rEpisode {}, Time: {:.2f}, Agent Loss: {:.4f}, SISR Loss: {:.4f} | PSNR: {:.4f} | SSIM: {:.4f}'\
+                      .format(i, time.time() - timestep, loss,sisr_loss,psnr,ssim),end="\n")
+            if i % 100 == 0:
+                self.savemodels()
 
 ########################################################################################################
 ########################################################################################################

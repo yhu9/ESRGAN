@@ -24,7 +24,7 @@ from utils import util
 ########################################################################################################
 #ARGUMENTS TO PASS FOR TRAINING
 parser = argparse.ArgumentParser()
-parser.add_argument("--srmodel_path",default="../models/RRDB_ESRGAN_x4.pth", help='Path to the SR model')
+parser.add_argument("--srmodel_path",default="../../models/RRDB_ESRGAN_x4.pth", help='Path to the SR model')
 parser.add_argument("--batch_size",default=32, help='Batch Size')
 parser.add_argument("--gamma",default=.9, help='Gamma Value for RL algorithm')
 parser.add_argument("--eps_start",default=.90, help='Epsilon decay start value')
@@ -32,7 +32,7 @@ parser.add_argument("--eps_end",default=0.10, help='Epsilon decay end value')
 parser.add_argument("--eps_decay",default=10000, help='Epsilon decay fractional step size')
 parser.add_argument("--target_update",default=20, help='Target network update time')
 parser.add_argument("--action_space",default=4, help='Action Space size')
-parser.add_argument("--memory_size",default=10000, help='Memory Size')
+parser.add_argument("--memory_size",default=100000, help='Memory Size')
 parser.add_argument("--training_lrpath",default="../../../data/DIV2K_train_LR_bicubic/X4")
 #parser.add_argument("--training_lrpath",default="LR")
 parser.add_argument("--training_hrpath",default="../../../data/DIV2K_train_HR")
@@ -41,6 +41,8 @@ parser.add_argument("--loadagent",default=False, action='store_const',const=True
 parser.add_argument("--learning_rate",default=0.0001,help="Learning rate of Super Resolution Models")
 parser.add_argument("--upsize", default=4,help="Upsampling size of the network")
 parser.add_argument("--gen_patchinfo",default=False,action='store_const',const=True)
+parser.add_argument("--device",default='cuda:0',help='set device to train on')
+parser.add_argument("--finetune",default=False,action='store_const',const=True)
 parser.add_argument("--name", required=True, help='Name to give this training session')
 args = parser.parse_args()
 ########################################################################################################
@@ -68,18 +70,21 @@ class SISR():
         self.step = 0
         if args.name != 'none':
             self.logger = logger.Logger(args.name)   #create our logger for tensorboard in log directory
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") #determine cpu/gpu
+        else: self.logger = None
+        self.device = torch.device(args.device) #determine cpu/gpu
 
         #LOAD A COPY OF THE MODEL N TIMES
         self.SRmodels = []
         self.SRoptimizers = []
         for i in range(self.SR_COUNT):
             model = arch.RRDBNet(3,3,64,23,gc=32)
-            model.apply(init_weights)
+            if args.finetune: model.load_state_dict(torch.load(SRMODEL_PATH),strict=True)
+            else: model.apply(init_weights)
             self.SRmodels.append(model)
             self.SRmodels[-1].to(self.device)
             self.SRoptimizers.append(torch.optim.Adam(model.parameters(),lr=self.LR))
-        print('Model path {:s}. Loaded...'.format(SRMODEL_PATH))
+        #print('Model path {:s}. Loaded...'.format(SRMODEL_PATH))
+        print('Model Randomly Loaded...')
 
     #TRAINING IMG LOADER WITH VARIABLE PATCH SIZES AND UPSCALE FACTOR
     def getTrainingPatches(self,LR,HR, patch_size=16,stride=16):
@@ -123,7 +128,7 @@ class SISR():
 
         self.SRoptimizers[action].zero_grad()
         hr_hat = self.SRmodels[action](lr)
-        loss = F.l1_loss(hr,hr_hat)
+        loss = F.l1_loss(hr_hat,hr)
         loss.backward()
         self.SRoptimizers[action].step()
 
@@ -165,7 +170,7 @@ class SISR():
 
         #create our agent on based on previous information
         self.patchinfo = np.load('models/patchinfo.npy')
-        self.agent = agent.Agent(args,self.device,args.action_space,self.patchinfo.sum())
+        self.agent = agent.Agent(args,args.action_space,self.patchinfo.sum())
 
         #START TRAINING
         for c in count():
@@ -189,11 +194,12 @@ class SISR():
                 for j,sisr in enumerate(self.SRmodels):
                     self.SRoptimizers[j].zero_grad()           #zero our sisr gradients
                     hr_pred = sisr(lrbatch)
-                    m_labels = labels + np.sum(self.patchinfo[:idx])
+                    m_labels = labels + int(np.sum(self.patchinfo[:idx]))
 
                     #update sisr model based on weighted l1 loss
                     l1diff = torch.abs(hr_pred - hrbatch).view(64,-1).mean(1)
-                    imgscore = torch.matmul(l1diff.unsqueeze(1),F.one_hot(torch.Tensor([j]).long(),self.SR_COUNT).float().to(self.device))
+                    onehot = torch.zeros(self.SR_COUNT); onehot[j] = 1.0
+                    imgscore = torch.matmul(l1diff.unsqueeze(1),onehot.to(self.device).unsqueeze(0))
                     weighted_imgscore = self.agent.model(imgscore,m_labels)
                     loss1 = torch.mean(weighted_imgscore)
                     loss1.backward(retain_graph=True)
@@ -216,12 +222,19 @@ class SISR():
                 #LOG THE INFORMATION
                 print('\rEpisode {}, Agent Loss: {:.4f}, SISR Loss: {:.4f}'\
                       .format(c,np.mean(agent_loss),np.mean(sisr_loss)),end="\n")
-                self.logger.scalar_summary({'AgentLoss': np.mean(agent_loss), 'SISRLoss': np.mean(sisr_loss)})
-                actions_taken = self.agent.model.M.weight.max(1)[1]
-                self.logger.hist_summary('actions',actions_taken.cpu().numpy(),bins=self.SR_COUNT)
+
+                if self.logger:
+                    self.logger.scalar_summary({'AgentLoss': torch.tensor(np.mean(agent_loss)), 'SISRLoss': torch.tensor(np.mean(sisr_loss))})
+
+                    #CAN'T QUITE GET THE ACTION VISUALIZATION WORK ON THE SERVER
+                    #actions_taken = self.agent.model.M.weight.max(1)[1]
+                    #self.logger.hist_summary('actions',np.array(actions_taken.tolist()),bins=self.SR_COUNT)
+                    #self.logger.hist_summary('actions',actions_taken,bins=self.SR_COUNT)
+                    self.logger.incstep()
 
             #save the model at the end of every episode
-            self.savemodels()
+            if c % 100 == 0:
+                self.savemodels()
 
 ########################################################################################################
 ########################################################################################################
