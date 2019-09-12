@@ -86,7 +86,7 @@ class SISR():
 
     #TRAINING IMG LOADER WITH VARIABLE PATCH SIZES AND UPSCALE FACTOR
     def getTrainingPatches(self, patch_size=16):
-        idx = random.randint(0,len(self.TRAINING_HRPATH))
+        idx = random.randint(0,len(self.TRAINING_HRPATH)-1)
         HRpath = self.TRAINING_HRPATH[idx]
         LRpath = self.TRAINING_LRPATH[idx]
         LR = cv2.imread(LRpath,cv2.IMREAD_COLOR)
