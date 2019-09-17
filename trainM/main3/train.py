@@ -6,6 +6,7 @@ from collections import deque
 from itertools import count
 import random
 import time
+import imageio
 
 #OPEN SOURCE IMPORTS
 import cv2
@@ -20,12 +21,13 @@ import RRDBNet_arch as arch
 import agent
 import logger
 from utils import util
+from test import Tester
 
 ########################################################################################################
 #ARGUMENTS TO PASS FOR TRAINING
 parser = argparse.ArgumentParser()
 parser.add_argument("--srmodel_path",default="../../models/RRDB_ESRGAN_x4.pth", help='Path to the SR model')
-parser.add_argument("--batch_size",default=32, help='Batch Size')
+parser.add_argument("--batch_size",default=64, help='Batch Size')
 parser.add_argument("--gamma",default=.9, help='Gamma Value for RL algorithm')
 parser.add_argument("--eps_start",default=.90, help='Epsilon decay start value')
 parser.add_argument("--eps_end",default=0.10, help='Epsilon decay end value')
@@ -45,7 +47,7 @@ parser.add_argument("--learning_rate",default=0.0001,help="Learning rate of Supe
 parser.add_argument("--upsize", default=4,help="Upsampling size of the network")
 parser.add_argument("--gen_patchinfo",default=False,action='store_const',const=True)
 parser.add_argument("--device",default='cuda:0',help='set device to train on')
-parser.add_argument("--finetune",default=False,action='store_const',const=True)
+parser.add_argument("--finetune",default=True,action='store_const',const=False)
 parser.add_argument("--name", required=True, help='Name to give this training session')
 args = parser.parse_args()
 ########################################################################################################
@@ -68,8 +70,8 @@ class SISR():
         self.TRAINING_LRPATH.sort()
         self.TRAINING_HRPATH.sort()
         self.PATCH_SIZE = args.patchsize
-        self.TESTING_PATH = glob.glob(os.path.join(args.testing_path,"*"))
         self.patchinfo_dir = args.patchinfo
+        self.TESTING_PATH = glob.glob(os.path.join(args.testing_path,"*"))
         self.LR = args.learning_rate
         self.UPSIZE = args.upsize
         self.step = 0
@@ -82,6 +84,7 @@ class SISR():
         #DEFAULT START OR START ON PREVIOUSLY TRAINED EPOCH
         if args.model_dir != "":
             self.load(args)
+            print('continue training for model: ' + args.model_dir)
         else:
             self.SRmodels = []
             self.SRoptimizers = []
@@ -99,20 +102,21 @@ class SISR():
                 self.SRoptimizers.append(torch.optim.Adam(model.parameters(),lr=self.LR))
             self.patchinfo = np.load(self.patchinfo_dir)
             self.agent = agent.Agent(args,self.patchinfo.sum())
-            print('Model path {:s}. Loaded...'.format(SRMODEL_PATH))
-            #print('Model Randomly Loaded...')
 
     #LOAD A PRETRAINED AGENT WITH SUPER RESOLUTION MODELS
     def load(self,args):
         loadedparams = torch.load(args.model_dir,map_location=self.device)
-        self.patchinfo = np.load(args.patchinfo)
-        self.agent = Agent(args,self.patchinfo.sum(),train=False)
+        #create our agent on based on previous information
+        self.patchinfo = np.load(self.patchinfo_dir)
+        self.agent = agent.Agent(args,self.patchinfo.sum())
         self.SRmodels = []
+        self.SRoptimizers = []
         for i in range(args.action_space):
             model = arch.RRDBNet(3,3,64,23,gc=32)
             model.load_state_dict(loadedparams["sisr" + str(i)])
             self.SRmodels.append(model)
             self.SRmodels[-1].to(self.device)
+            self.SRoptimizers.append(torch.optim.Adam(model.parameters(),lr=self.LR))
 
     #TRAINING IMG LOADER WITH VARIABLE PATCH SIZES AND UPSCALE FACTOR
     def getTrainingPatches(self,LR,HR):
@@ -176,7 +180,7 @@ class SISR():
         for i,m in enumerate(self.SRmodels):
             modelname = "sisr" + str(i)
             data[modelname] = m.state_dict()
-        torch.save(data,"models/" + self.name + "sisr.pth")
+        torch.save(data,"models/" + self.name + "_sisr.pth")
 
     #MAIN FUNCTION WHICH GETS PATCH INFO GIVEN CURRENT TRAINING SET AND PATCHSIZE
     def genPatchInfo(self):
@@ -199,72 +203,85 @@ class SISR():
         #AND ATTEMPT TO SUPER RESOLVE EACH PATCH
 
         #create our agent on based on previous information
-        self.patchinfo = np.load(self.patchinfo_dir)
-        self.agent = agent.Agent(args,args.action_space,self.patchinfo.sum())
+        #requires pytorch 1.1.0+ which is not possible on the server
+        #scheduler = torch.optim.lr_scheduler.CyclicLR(self.agent.optimizer,base_lr=0.0001,max_lr=0.1)
+        #CREATE A TESTER to test at n iterations
+        test = Tester(self.agent, self.SRmodels,evaluate=False,testset=['Set5'])
 
         #START TRAINING
         for c in count():
-            idx = random.randint(0,len(self.TRAINING_HRPATH) - 1)
-            HRpath = self.TRAINING_HRPATH[idx]
-            LRpath = self.TRAINING_LRPATH[idx]
-            LR = cv2.imread(LRpath,cv2.IMREAD_COLOR)
-            HR = cv2.imread(HRpath,cv2.IMREAD_COLOR)
-            LR,HR = self.getTrainingPatches(LR,HR)
-            sisr_loss = []
-            agent_loss = []
+            indices = list(range(len(self.TRAINING_HRPATH)))
+            random.shuffle(indices)
+            #FOR EACH HIGH RESOLUTION IMAGE
+            for n,idx in enumerate(indices):
+                sisr_loss = []
+                agent_loss = []
+                HRpath = self.TRAINING_HRPATH[idx]
+                LRpath = self.TRAINING_LRPATH[idx]
+                LR = imageio.imread(LRpath)
+                HR = imageio.imread(HRpath)
+                LR,HR = self.getTrainingPatches(LR,HR)
 
-            #FOR 10 RANDOM SUB SAMPLES
-            for _ in range(10):
-                labels = torch.Tensor(np.array(random.sample(range(len(LR)), 64))).long().cuda()
-                lrbatch = LR[labels,:,:,:]
-                hrbatch = HR[labels,:,:,:]
+                #WE MUST GO THROUGH EVERY SINGLE PATCH IN RANDOM ORDER WITHOUT REPLACEMENT
+                patch_ids = list(range(len(LR)))
+                random.shuffle(patch_ids)
+                while len(patch_ids) > 0:
+                    batch_ids = patch_ids[-self.batch_size:]
+                    patch_ids = patch_ids[:-self.batch_size]
 
-                self.agent.opt.zero_grad()    #zero our policy gradients
-                #UPDATE OUR SISR MODELS
-                for j,sisr in enumerate(self.SRmodels):
-                    self.SRoptimizers[j].zero_grad()           #zero our sisr gradients
-                    hr_pred = sisr(lrbatch)
-                    m_labels = labels + int(np.sum(self.patchinfo[:idx]))
+                    labels = torch.Tensor(batch_ids).long().cuda()
+                    lrbatch = LR[labels,:,:,:]
+                    hrbatch = HR[labels,:,:,:]
 
-                    #update sisr model based on weighted l1 loss
-                    l1diff = torch.abs(hr_pred - hrbatch).view(64,-1).mean(1)
-                    onehot = torch.zeros(self.SR_COUNT); onehot[j] = 1.0
-                    imgscore = torch.matmul(l1diff.unsqueeze(1),onehot.to(self.device).unsqueeze(0))
-                    weighted_imgscore = self.agent.model(imgscore,m_labels)
-                    loss1 = torch.mean(weighted_imgscore)
-                    loss1.backward(retain_graph=True)
-                    self.SRoptimizers[j].step()
-                    sisr_loss.append(loss1.item())
+                    self.agent.opt.zero_grad()    #zero our policy gradients
+                    #UPDATE OUR SISR MODELS
+                    for j,sisr in enumerate(self.SRmodels):
+                        self.SRoptimizers[j].zero_grad()           #zero our sisr gradients
+                        hr_pred = sisr(lrbatch)
+                        m_labels = labels + int(np.sum(self.patchinfo[:idx]))
+
+                        #update sisr model based on weighted l1 loss
+                        l1diff = torch.abs(hr_pred - hrbatch).view(len(batch_ids),-1).mean(1)           #64x1 vector
+                        onehot = torch.zeros(self.SR_COUNT); onehot[j] = 1.0                #1x4 vector
+                        imgscore = torch.matmul(l1diff.unsqueeze(1),onehot.to(self.device).unsqueeze(0))    #64x4 matrix with column j as l1 diff and rest as zeros
+
+                        weighted_imgscore = self.agent.model(imgscore,m_labels)     #do element wise matrix multiplication of l1 diff and softmax weights
+                        loss1 = torch.mean(weighted_imgscore)
+                        loss1.backward(retain_graph=True)
+                        self.SRoptimizers[j].step()
+                        sisr_loss.append(loss1.item())
 
                     #gather the gradients of the agent policy and constrain them to be within 0-1 with max value as 1
-                    one_matrix = torch.ones(64,self.SR_COUNT).to(self.device)
+                    one_matrix = torch.ones(len(batch_ids),self.SR_COUNT).to(self.device)
                     weight_identity = self.agent.model(one_matrix,m_labels)
-                    loss2 = torch.mean(torch.abs(torch.sum(torch.abs(weight_identity),dim=1) - 1)) #have sum of each row equal to 1
                     val,maxid = weight_identity.max(1) #have max of each row equal to 1
                     loss3 = torch.mean(torch.abs(weight_identity[:,maxid] - 1))
-                    loss2.backward(retain_graph=True)
-                    loss3.backward(retain_graph=True)
-                    agent_loss.append(loss2.item() + loss3.item() + loss1.item())
+                    loss3.backward()
 
-                #UPDATE THE AGENT POLICY ACCORDING TO ACCUMULATED GRADIENTS FOR ALL SUPER RESOLUTION MODELS
-                self.agent.opt.step()
+                    #UPDATE THE AGENT POLICY ACCORDING TO ACCUMULATED GRADIENTS FOR ALL SUPER RESOLUTION MODELS
+                    self.agent.opt.step()
 
-                #LOG THE INFORMATION
-                print('\rEpisode {}, Agent Loss: {:.4f}, SISR Loss: {:.4f}'\
-                      .format(c,np.mean(agent_loss),np.mean(sisr_loss)),end="\n")
+                    #LOG THE INFORMATION
+                    agent_loss.append(loss3.item() + np.mean(sisr_loss))
+                    print('\rEpoch/img: {}/{} | Agent Loss: {:.4f}, SISR Loss: {:.4f}'\
+                          .format(c,n,np.mean(agent_loss),np.mean(sisr_loss)),end="\n")
 
-                if self.logger:
-                    self.logger.scalar_summary({'AgentLoss': torch.tensor(np.mean(agent_loss)), 'SISRLoss': torch.tensor(np.mean(sisr_loss))})
+                    if self.logger:
+                        self.logger.scalar_summary({'AgentLoss': torch.tensor(np.mean(agent_loss)), 'SISRLoss': torch.tensor(np.mean(sisr_loss))})
 
-                    #CAN'T QUITE GET THE ACTION VISUALIZATION WORK ON THE SERVER
-                    #actions_taken = self.agent.model.M.weight.max(1)[1]
-                    #self.logger.hist_summary('actions',np.array(actions_taken.tolist()),bins=self.SR_COUNT)
-                    #self.logger.hist_summary('actions',actions_taken,bins=self.SR_COUNT)
-                    self.logger.incstep()
+                        #CAN'T QUITE GET THE ACTION VISUALIZATION WORK ON THE SERVER
+                        #actions_taken = self.agent.model.M.weight.max(1)[1]
+                        #self.logger.hist_summary('actions',np.array(actions_taken.tolist()),bins=self.SR_COUNT)
+                        #self.logger.hist_summary('actions',actions_taken,bins=self.SR_COUNT)
+                        self.logger.incstep()
 
-            #save the model at the end of every episode
-            if c % 100 == 0:
-                self.savemodels()
+                #save the model after 200 images total of 800 images
+                if (n+1) % 200 == 0:
+                    with torch.no_grad():
+                        psnr,ssim = test.validate(save=False)
+                    [model.train() for model in self.SRmodels]
+                    if self.logger: self.logger.scalar_summary({'Testing_PSNR': psnr, 'Testing_SSIM': ssim})
+                    self.savemodels()
 
 ########################################################################################################
 ########################################################################################################

@@ -24,7 +24,7 @@ from utils import util
 ########################################################################################################
 #ARGUMENTS TO PASS FOR TRAINING
 parser = argparse.ArgumentParser()
-parser.add_argument("--srmodel_path",default="../models/RRDB_ESRGAN_x4.pth", help='Path to the SR model')
+parser.add_argument("--srmodel_path",default="../../models/RRDB_ESRGAN_x4.pth", help='Path to the SR model')
 parser.add_argument("--batch_size",default=32, help='Batch Size')
 parser.add_argument("--gamma",default=.9, help='Gamma Value for RL algorithm')
 parser.add_argument("--eps_start",default=.90, help='Epsilon decay start value')
@@ -33,10 +33,10 @@ parser.add_argument("--eps_decay",default=1000000, help='Epsilon decay fractiona
 parser.add_argument("--target_update",default=20, help='Target network update time')
 parser.add_argument("--action_space",default=4, help='Action Space size')
 parser.add_argument("--memory_size",default=100000, help='Memory Size')
-parser.add_argument("--training_lrpath",default="../../data/DIV2K_train_LR_bicubic/X4")
+parser.add_argument("--training_lrpath",default="../../../data/DIV2K_train_LR_bicubic/X4")
 #parser.add_argument("--training_lrpath",default="LR")
-parser.add_argument("--training_hrpath",default="../../data/DIV2K_train_HR")
-parser.add_argument("--testing_path",default="../../data/DIV2K_train_LR_bicubic/X4")
+parser.add_argument("--training_hrpath",default="../../../data/DIV2K_train_HR")
+parser.add_argument("--testing_path",default="../../../data/DIV2K_train_LR_bicubic/X4")
 parser.add_argument("--loadagent",default=False, action='store_const',const=True)
 parser.add_argument("--learning_rate",default=0.0001,help="Learning rate of Super Resolution Models")
 parser.add_argument("--upsize", default=4,help="Upsampling size of the network")
@@ -149,7 +149,7 @@ class SISR():
         for i,m in enumerate(self.SRmodels):
             modelname = "sisr" + str(i)
             data[modelname] = m.state_dict()
-        torch.save(data,"models/sisr.pth")
+        torch.save(data,"models/" + self.name + "_sisr.pth")
 
     #TRAINING REGIMEN
     def train(self,sisrregime=20):

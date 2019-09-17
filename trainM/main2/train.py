@@ -68,8 +68,8 @@ class SISR():
         self.TRAINING_LRPATH.sort()
         self.TRAINING_HRPATH.sort()
         self.PATCH_SIZE = args.patchsize
-        self.TESTING_PATH = glob.glob(os.path.join(args.testing_path,"*"))
         self.patchinfo_dir = args.patchinfo
+        self.TESTING_PATH = glob.glob(os.path.join(args.testing_path,"*"))
         self.LR = args.learning_rate
         self.UPSIZE = args.upsize
         self.step = 0
@@ -99,20 +99,21 @@ class SISR():
                 self.SRoptimizers.append(torch.optim.Adam(model.parameters(),lr=self.LR))
             self.patchinfo = np.load(self.patchinfo_dir)
             self.agent = agent.Agent(args,self.patchinfo.sum())
-            print('Model path {:s}. Loaded...'.format(SRMODEL_PATH))
-            #print('Model Randomly Loaded...')
 
     #LOAD A PRETRAINED AGENT WITH SUPER RESOLUTION MODELS
     def load(self,args):
         loadedparams = torch.load(args.model_dir,map_location=self.device)
-        self.patchinfo = np.load(args.patchinfo)
-        self.agent = Agent(args,self.patchinfo.sum(),train=False)
+        #create our agent on based on previous information
+        self.patchinfo = np.load(self.patchinfo_dir)
+        self.agent = agent.Agent(args,self.patchinfo.sum())
         self.SRmodels = []
+        self.SRoptimizers = []
         for i in range(args.action_space):
             model = arch.RRDBNet(3,3,64,23,gc=32)
             model.load_state_dict(loadedparams["sisr" + str(i)])
             self.SRmodels.append(model)
             self.SRmodels[-1].to(self.device)
+            self.SRoptimizers.append(torch.optim.Adam(model.parameters(),lr=self.LR))
 
     #TRAINING IMG LOADER WITH VARIABLE PATCH SIZES AND UPSCALE FACTOR
     def getTrainingPatches(self,LR,HR):
@@ -176,7 +177,7 @@ class SISR():
         for i,m in enumerate(self.SRmodels):
             modelname = "sisr" + str(i)
             data[modelname] = m.state_dict()
-        torch.save(data,"models/" + self.name + "sisr.pth")
+        torch.save(data,"models/" + self.name + "_sisr.pth")
 
     #MAIN FUNCTION WHICH GETS PATCH INFO GIVEN CURRENT TRAINING SET AND PATCHSIZE
     def genPatchInfo(self):
@@ -197,11 +198,6 @@ class SISR():
     def train(self):
         #EACH EPISODE TAKE ONE LR/HR PAIR WITH CORRESPONDING PATCHES
         #AND ATTEMPT TO SUPER RESOLVE EACH PATCH
-
-        #create our agent on based on previous information
-        self.patchinfo = np.load(self.patchinfo_dir)
-        self.agent = agent.Agent(args,args.action_space,self.patchinfo.sum())
-
         #START TRAINING
         for c in count():
             idx = random.randint(0,len(self.TRAINING_HRPATH) - 1)

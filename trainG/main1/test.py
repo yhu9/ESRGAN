@@ -74,7 +74,6 @@ class Tester():
                 out = (out * 255.0).round()
 
                 psnr,ssim = util.calc_metrics(hr,out,crop_border=self.upsize)
-                print(hr_file,psnr)
                 scores[vset].append([psnr,ssim])
 
             mu_psnr = np.mean(np.array(scores[vset])[:,0])

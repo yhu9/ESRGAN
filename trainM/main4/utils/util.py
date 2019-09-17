@@ -128,9 +128,11 @@ def calc_metrics(img1, img2, crop_border, test_Y=True,out=''):
         raise ValueError('Wrong image dimension: {}. Should be 2 or 3.'.format(im1_in.ndim))
 
     psnr = calc_psnr(cropped_im1 * 255, cropped_im2 * 255)
-    ssim = 0.0
+    try:
+        ssim = calc_ssim(cropped_im1 * 255, cropped_im2 * 255)
+    except:
+        ssim = 0.0
     return psnr,ssim
-    ssim = calc_ssim(cropped_im1 * 255, cropped_im2 * 255)
 
     #Sliding window approach to find local psnr and ssim values
     #psnr_vals = np.zeros(cropped_im1.shape)

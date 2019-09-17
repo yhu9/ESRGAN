@@ -62,9 +62,11 @@ class Mask(nn.Module):
         super(Mask,self).__init__()
         self.weight = torch.nn.Parameter(data=torch.Tensor(num_patches, action_space), requires_grad=True)
         self.weight.data.fill_(1/action_space)
+        self.fn = torch.nn.Softmax(dim=1)
 
     def forward(self,x,labels):
-        myweights = self.weight[labels].mul(x)
+        probs = self.fn(self.weight[labels])
+        myweights = probs.mul(x)
         #myweights = F.softmax(myweights)
         return myweights
 
@@ -128,7 +130,7 @@ class Agent():
             self.model.load_state_dict(chkpoint['agent'])
 
         self.model.to(self.device)
-        self.opt = torch.optim.Adam(self.model.parameters(),lr=0.001)
+        self.opt = torch.optim.Adam(self.model.parameters(),lr=0.01,weight_decay=1e-6)
 
 #######################################################################################################
 #######################################################################################################

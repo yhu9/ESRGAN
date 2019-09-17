@@ -7,6 +7,7 @@ import argparse
 import cv2
 import numpy as np
 import torch
+import scipy.io as sio
 
 #CUSTOM IMPORTS
 import RRDBNet_arch as arch
@@ -18,7 +19,6 @@ from utils import util
 ####################################################################################################
 parser = argparse.ArgumentParser()
 parser.add_argument("--mode",default="RRDB",help='Mode of Operation')
-parser.add_argument("--model_dir",default="models/sisr.pth")
 parser.add_argument("--srmodel_path",default="../../models/RRDB_ESRGAN_x4.pth", help='Path to the SR model')
 parser.add_argument("--patchinfo",default='models/patchinfo.npy',help="location of patchinfo data")
 parser.add_argument("--dataroot",default="../../../data/testing")
@@ -29,6 +29,7 @@ parser.add_argument("--patchsize",default=16,help="patch size to super resolve")
 parser.add_argument("--upsize", default=4,help="Upsampling size of the network")
 parser.add_argument("--device",default='cuda:0',help='set device to train on')
 parser.add_argument("--name",default='none',help='set the name of this testing instance')
+parser.add_argument("--model_dir",required=True, help='Model used for testing')
 args = parser.parse_args()
 ####################################################################################################
 ####################################################################################################
@@ -36,7 +37,7 @@ args = parser.parse_args()
 
 #OUR GENERAL TESTING CLASS WHICH CAN BE USED DURING TRAINING AND EVALUTATION
 class Tester():
-    def __init__(self,agent=None,SRmodels=None,args=args,evaluate=True):
+    def __init__(self,agent=None,SRmodels=None,args=args,evaluate=True,testset=['Set5','Set14','B100','Urban100','Manga109']):
         self.device = args.device
         if evaluate: self.load(args)
         else:
@@ -47,7 +48,7 @@ class Tester():
         downsample_method = args.down_method
         self.hr_rootdir = os.path.join(args.dataroot,'HR')
         self.lr_rootdir = os.path.join(args.dataroot,"LR" + downsample_method)
-        self.validationsets = ['Set5','Set14','B100', 'Urban100','Manga109']
+        self.validationsets = testset
         self.upsize = args.upsize
         self.resfolder = 'x' + str(args.upsize)
         self.PATCH_SIZE = args.patchsize
@@ -79,7 +80,7 @@ class Tester():
         size = self.PATCH_SIZE
         stride = self.PATCH_SIZE // 2
         pad = self.PATCH_SIZE // 8
-        info = []
+        info = {'assignment': np.zeros((hrh,hrw))}
 
         for i in range(0,h-1,stride):
             for j in range(0,w-1,stride):
@@ -109,25 +110,25 @@ class Tester():
                 lef,lef_ = (0,0) if j == 0 else ((j+pad)*self.upsize,pad*self.upsize)
                 rig,rig_ = (hrw,size*self.upsize) if j+size >= w else ((j+size-pad)*self.upsize,-pad*self.upsize)
 
-                info.append(max(psnrscores))
                 idx = psnrscores.index(max(psnrscores))
                 canvas[top:bot,lef:rig] = sr_predictions[idx][top_:bot_,lef_:rig_]
+                info['assignment'][top:bot,lef:rig] = idx
 
                 #cv2.imshow('srimg',canvas.astype(np.uint8))
                 #cv2.imshow('gtimg',hr.astype(np.uint8))
                 #cv2.waitKey(1)
 
         psnr,ssim = util.calc_metrics(hr,canvas,crop_border=self.upsize)
+        info['psnr'] = psnr
+        info['ssim'] = ssim
         print(psnr,ssim)
         return psnr,ssim,np.array(info)
 
     #TEST A MODEL ON ALL DATASETS
-    def validate(self):
+    def validate(self,save=True):
         scores = {}
         [model.eval() for model in self.SRmodels]
-        i = 0
         for vset in self.validationsets:
-            if i < 3: i+=1; continue;
             scores[vset] = []
             HR_dir = os.path.join(self.hr_rootdir,vset)
             LR_dir = os.path.join(os.path.join(self.lr_rootdir,vset),self.resfolder)
@@ -146,8 +147,11 @@ class Tester():
                 scores[vset].append([psnr,ssim])
 
                 #save distribution info of psnr scores for each file tested
-                filename = os.path.join('runs',vset + os.path.basename(hr_file))
-                np.save(filename,info)
+                filename = os.path.join('runs',vset + os.path.basename(hr_file)+'.mat')
+                if save:
+                    info['LR_DIR'] = lr_file
+                    info['HR_DIR'] = hr_file
+                sio.savemat(filename,info)
 
             mu_psnr = np.mean(np.array(scores[vset])[:,0])
             mu_ssim = np.mean(np.array(scores[vset])[:,1])
